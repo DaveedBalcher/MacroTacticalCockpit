@@ -4,9 +4,10 @@ import logging
 
 import numpy as np
 import pandas as pd
+import plotly.graph_objects as go
 import streamlit as st
 
-from src.config import ASSET_UNIVERSE
+from src.config import ASSET_DISPLAY_NAMES, ASSET_UNIVERSE
 from src.data import DataManager
 from src.models import (
     fit_bsts,
@@ -27,6 +28,36 @@ st.set_page_config(
     initial_sidebar_state="expanded",
 )
 
+# --- Custom CSS for polish ---
+st.markdown("""
+<style>
+    /* Tighten top padding */
+    .block-container { padding-top: 1.5rem; }
+
+    /* Style metric cards */
+    [data-testid="stMetric"] {
+        background: rgba(128, 128, 128, 0.08);
+        border-radius: 8px;
+        padding: 12px 16px;
+        border: 1px solid rgba(128, 128, 128, 0.15);
+    }
+    [data-testid="stMetric"] label { font-size: 0.78rem; opacity: 0.8; }
+
+    /* Sidebar styling */
+    [data-testid="stSidebar"] [data-testid="stDataFrame"] { font-size: 0.8rem; }
+
+    /* Section headers */
+    .section-header {
+        font-size: 0.85rem;
+        font-weight: 600;
+        text-transform: uppercase;
+        letter-spacing: 0.08em;
+        color: rgba(160, 160, 160, 0.8);
+        margin-bottom: 0.25rem;
+    }
+</style>
+""", unsafe_allow_html=True)
+
 
 # --- Session State: DataManager ---
 @st.cache_resource
@@ -38,9 +69,9 @@ def get_data_manager() -> DataManager:
 
 # --- Sidebar ---
 with st.sidebar:
-    st.header("Controls")
+    st.markdown("### Controls")
 
-    if st.button("Refresh Data"):
+    if st.button("Refresh Data", use_container_width=True, type="primary"):
         st.cache_resource.clear()
         st.rerun()
 
@@ -51,27 +82,44 @@ with st.sidebar:
         st.error("No data loaded. Check your internet connection.")
         st.stop()
 
-    anchor = st.selectbox(
+    display_options = [ASSET_DISPLAY_NAMES.get(a, a) for a in available]
+    display_to_key = {ASSET_DISPLAY_NAMES.get(a, a): a for a in available}
+    selected_display = st.selectbox(
         "Anchor Asset",
-        options=available,
+        options=display_options,
         index=0,
     )
+    anchor = display_to_key[selected_display]
 
     st.divider()
-    st.subheader("Lead-Lag Rankings")
 
     close_matrix = dm.get_close_matrix()
+
+    # Lead-Lag Rankings
+    st.markdown('<p class="section-header">Lead-Lag Rankings</p>', unsafe_allow_html=True)
     if len(close_matrix.columns) > 1:
         rankings = lead_lag_rankings(close_matrix, anchor=anchor)
         display_table = build_lead_lag_table(rankings)
-        st.dataframe(display_table, hide_index=True, use_container_width=True)
+
+        st.dataframe(
+            display_table,
+            hide_index=True,
+            use_container_width=True,
+            column_config={
+                "asset": st.column_config.TextColumn("Asset", width="small"),
+                "lag": st.column_config.NumberColumn("Lag", width="small"),
+                "correlation": st.column_config.NumberColumn(
+                    "Corr",
+                    format="%.4f",
+                ),
+                "direction": st.column_config.TextColumn("Direction", width="medium"),
+            },
+        )
     else:
         st.info("Need at least 2 assets for lead-lag analysis.")
 
 
 # --- Main Area ---
-st.title(f"Macro Tactical Cockpit — {anchor}")
-
 ohlcv = dm.get_ohlcv(anchor)
 
 # HMM Regime Detection
@@ -83,7 +131,6 @@ try:
     states, probs = predict_regimes(hmm_model, hmm_features)
     label_map = map_regime_labels(hmm_model)
 
-    # Align states to OHLCV index (features are shorter due to dropna)
     feature_index = ohlcv.index[-len(states):]
     regime_series = None
     if len(feature_index) == len(states):
@@ -95,18 +142,38 @@ except Exception as e:
     label_map = {}
     regime_series = None
 
-# Regime summary — inline above the chart
-if hmm_ok:
-    latest_probs = probs[-1]
-    dominant_idx = int(np.argmax(latest_probs))
-    dominant_label = label_map.get(dominant_idx, f"State {dominant_idx}")
-    dominant_prob = latest_probs[dominant_idx]
+# --- Header row: title + price + regime badge ---
+header_col1, header_col2, header_col3 = st.columns([3, 1, 1])
+with header_col1:
+    st.markdown(f"## Macro Tactical Cockpit — {anchor}")
 
-    regime_colors = {"BULL": "green", "BEAR": "red", "HIGH_VOL": "orange", "NEUTRAL": "gray"}
-    color = regime_colors.get(dominant_label, "gray")
-    st.markdown(
-        f"**Regime:** :{color}[{dominant_label}] ({dominant_prob:.0%})",
-    )
+with header_col2:
+    latest_price = ohlcv["Close"].iloc[-1]
+    prev_price = ohlcv["Close"].iloc[-2] if len(ohlcv) > 1 else latest_price
+    price_change = latest_price - prev_price
+    st.metric("Last Price", f"{latest_price:,.2f}", f"{price_change:+,.2f}")
+
+with header_col3:
+    if hmm_ok:
+        latest_probs = probs[-1]
+        dominant_idx = int(np.argmax(latest_probs))
+        dominant_label = label_map.get(dominant_idx, f"State {dominant_idx}")
+        dominant_prob = latest_probs[dominant_idx]
+
+        badge_colors = {
+            "BULL": ("#065f46", "#d1fae5"),
+            "BEAR": ("#7f1d1d", "#fecaca"),
+            "HIGH_VOL": ("#78350f", "#fed7aa"),
+            "NEUTRAL": ("#374151", "#e5e7eb"),
+        }
+        bg, fg = badge_colors.get(dominant_label, ("#374151", "#e5e7eb"))
+        st.markdown(
+            f'<div style="text-align:right; margin-top:1.2rem;">'
+            f'<span style="background:{fg}; color:{bg}; padding:6px 16px; '
+            f'border-radius:20px; font-weight:700; font-size:0.95rem;">'
+            f'{dominant_label} &middot; {dominant_prob:.0%}</span></div>',
+            unsafe_allow_html=True,
+        )
 
 # BSTS Forecast
 close_prices = ohlcv["Close"]
@@ -125,23 +192,58 @@ fig = build_main_chart(
 )
 st.plotly_chart(fig, use_container_width=True)
 
-# Bottom row: regime metrics + EWMA correlations side by side
-col1, col2 = st.columns(2)
+# --- Bottom panels ---
+st.divider()
+col1, col2 = st.columns([2, 3])
 
 with col1:
+    st.markdown('<p class="section-header">Regime Probabilities</p>', unsafe_allow_html=True)
     if hmm_ok:
-        st.subheader("Regime Probabilities")
-        cols = st.columns(len(latest_probs))
-        for i, (col, prob) in enumerate(zip(cols, latest_probs)):
-            label = label_map.get(i, f"State {i}")
-            col.metric(label, f"{prob:.1%}")
+        # Use 2x2 grid for regime probs to avoid truncation
+        row1 = st.columns(2)
+        row2 = st.columns(2)
+        prob_cols = [*row1, *row2]
+        for i, prob in enumerate(latest_probs):
+            if i < len(prob_cols):
+                label = label_map.get(i, f"State {i}")
+                prob_cols[i].metric(label, f"{prob:.1%}")
+    else:
+        st.info("Regime model unavailable.")
 
 with col2:
+    st.markdown('<p class="section-header">EWMA Correlations</p>', unsafe_allow_html=True)
     if len(close_matrix.columns) > 1:
-        st.subheader("EWMA Correlations")
         try:
             ewma_corr = ewma_correlation(close_matrix, anchor=anchor)
             latest_corr = ewma_corr.dropna().iloc[-1].sort_values(ascending=False)
-            st.bar_chart(latest_corr)
+
+            # Build a horizontal Plotly bar chart for better control
+            colors = ["#4ade80" if v > 0 else "#f87171" for v in latest_corr.values]
+            fig_corr = go.Figure(go.Bar(
+                x=latest_corr.values,
+                y=latest_corr.index,
+                orientation="h",
+                marker_color=colors,
+                text=[f"{v:+.3f}" for v in latest_corr.values],
+                textposition="auto",
+                textfont=dict(size=12),
+            ))
+            fig_corr.update_layout(
+                height=max(300, len(latest_corr) * 42),
+                margin=dict(l=10, r=10, t=10, b=30),
+                xaxis=dict(range=[-1.15, 1.15], title="Correlation", zeroline=True,
+                           zerolinecolor="rgba(128,128,128,0.3)", zerolinewidth=1),
+                yaxis=dict(autorange="reversed"),
+                template="plotly_dark",
+                font=dict(size=13),
+                bargap=0.3,
+            )
+            st.plotly_chart(fig_corr, use_container_width=True)
         except Exception as e:
             st.warning(f"EWMA correlation failed: {e}")
+    else:
+        st.info("Need at least 2 assets.")
+
+# --- Footer: last update timestamp ---
+last_ts = ohlcv.index[-1]
+st.caption(f"Last data point: {last_ts.strftime('%Y-%m-%d %H:%M UTC')}")

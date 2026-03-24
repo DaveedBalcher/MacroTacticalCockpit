@@ -20,6 +20,19 @@ TICKER_MAP: dict[str, str] = {
 
 ASSET_UNIVERSE: list[str] = list(TICKER_MAP.keys())
 
+# Human-readable display names: "Full Name (SHORT)"
+ASSET_DISPLAY_NAMES: dict[str, str] = {
+    "ES": "S&P 500 Futures (ES)",
+    "NQ": "Nasdaq 100 Futures (NQ)",
+    "ZB": "30-Year Treasury Futures (ZB)",
+    "CL": "Crude Oil Futures (CL)",
+    "GC": "Gold Futures (GC)",
+    "BTC": "Bitcoin (BTC)",
+    "DXY": "US Dollar Index (DXY)",
+    "MOVE": "Bond Volatility Index (MOVE)",
+    "VIX": "Equity Volatility Index (VIX)",
+}
+
 # === DATA PARAMETERS ===
 ROLLING_WINDOW_BARS: int = 7 * 23 * 60  # ~7 days of 1-min bars (~9660)
 MAX_FFILL_BARS: int = 5  # forward-fill up to 5 missing bars
