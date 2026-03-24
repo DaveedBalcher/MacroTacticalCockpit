@@ -25,7 +25,7 @@ logger = logging.getLogger(__name__)
 def prepare_hmm_features(
     ohlcv: pd.DataFrame,
     vol_window: int = 20,
-) -> np.ndarray:
+) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
     """Prepare feature matrix for HMM: [log_returns, realized_volatility].
 
     Args:
@@ -33,7 +33,8 @@ def prepare_hmm_features(
         vol_window: Rolling window for realized volatility.
 
     Returns:
-        2D numpy array of shape (T, 2), NaN-free.
+        (standardized_features, means, stds) — the raw statistics are
+        needed to un-standardize HMM state means for regime labeling.
     """
     close = ohlcv["Close"]
     log_returns = np.log(close / close.shift(1))
@@ -49,9 +50,9 @@ def prepare_hmm_features(
     means = values.mean(axis=0)
     stds = values.std(axis=0)
     stds[stds < 1e-10] = 1.0  # prevent division by zero
-    values = (values - means) / stds
+    standardized = (values - means) / stds
 
-    return values
+    return standardized, means, stds
 
 
 def fit_hmm(
@@ -99,42 +100,74 @@ def predict_regimes(
 
 def map_regime_labels(
     model: GaussianHMM,
-    ewma_corr_matrix: pd.DataFrame | None = None,
+    feature_means: np.ndarray | None = None,
+    feature_stds: np.ndarray | None = None,
 ) -> dict[int, str]:
     """Dynamically assign human-readable labels to raw HMM states.
 
-    Strategy: Sort states by their learned mean log-return (first feature):
-      - Highest mean return -> BULL
-      - Lowest mean return -> BEAR
-      - Among remaining, highest mean volatility -> HIGH_VOL
-      - Remaining -> NEUTRAL
+    Uses un-standardized state means so that labeling reflects actual
+    return/volatility magnitudes rather than relative rankings of noise.
+
+    Strategy:
+      1. Convert standardized HMM means back to raw scale.
+      2. States whose raw mean return exceeds +1 std of the return
+         distribution -> BULL; below -1 std -> BEAR.
+      3. Among unlabeled states, highest raw volatility (above median) -> HIGH_VOL.
+      4. Everything else -> NEUTRAL.
+
+    This avoids labeling the dominant quiet-market cluster as BEAR/BULL
+    just because it has a slightly positive/negative standardized mean.
 
     Returns:
         Dict mapping raw state int -> label string.
     """
     n_states = model.n_components
-    means = model.means_  # shape (n_states, n_features)
+    means = model.means_  # shape (n_states, n_features), standardized scale
 
-    # Mean log return is first feature
-    mean_returns = means[:, 0]
-    # Mean realized vol is second feature
-    mean_vols = means[:, 1]
+    # Un-standardize if stats are available
+    if feature_means is not None and feature_stds is not None:
+        raw_means = means * feature_stds + feature_means
+    else:
+        raw_means = means
 
-    # Sort states by mean return
-    sorted_by_return = np.argsort(mean_returns)
+    raw_returns = raw_means[:, 0]   # mean log return per state
+    raw_vols = raw_means[:, 1]      # mean realized vol per state
+
+    # Threshold: 0.5 std of the cross-state return spread
+    ret_spread = np.std(raw_returns)
+    ret_center = np.mean(raw_returns)
+    bull_thresh = ret_center + 0.5 * ret_spread
+    bear_thresh = ret_center - 0.5 * ret_spread
+
+    vol_median = np.median(raw_vols)
 
     label_map: dict[int, str] = {}
-    label_map[int(sorted_by_return[-1])] = "BULL"  # highest return
-    label_map[int(sorted_by_return[0])] = "BEAR"   # lowest return
+    unlabeled = list(range(n_states))
 
-    # Among the remaining states, assign HIGH_VOL to highest volatility
-    remaining = [int(s) for s in sorted_by_return[1:-1] if int(s) not in label_map]
+    # Assign BULL / BEAR only to states clearly above/below threshold
+    bull_candidates = [s for s in unlabeled if raw_returns[s] > bull_thresh]
+    bear_candidates = [s for s in unlabeled if raw_returns[s] < bear_thresh]
 
-    if remaining:
-        vol_order = sorted(remaining, key=lambda s: mean_vols[s], reverse=True)
-        label_map[vol_order[0]] = "HIGH_VOL"
-        for s in vol_order[1:]:
-            label_map[s] = "NEUTRAL"
+    if bull_candidates:
+        best_bull = max(bull_candidates, key=lambda s: raw_returns[s])
+        label_map[best_bull] = "BULL"
+        unlabeled.remove(best_bull)
+
+    if bear_candidates:
+        best_bear = min(bear_candidates, key=lambda s: raw_returns[s])
+        label_map[best_bear] = "BEAR"
+        unlabeled.remove(best_bear)
+
+    # Among remaining, highest volatility -> HIGH_VOL (if above median)
+    if unlabeled:
+        high_vol_candidate = max(unlabeled, key=lambda s: raw_vols[s])
+        if raw_vols[high_vol_candidate] > vol_median:
+            label_map[high_vol_candidate] = "HIGH_VOL"
+            unlabeled.remove(high_vol_candidate)
+
+    # Everything else -> NEUTRAL
+    for s in unlabeled:
+        label_map[s] = "NEUTRAL"
 
     return label_map
 

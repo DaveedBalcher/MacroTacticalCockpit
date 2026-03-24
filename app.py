@@ -128,13 +128,13 @@ with st.sidebar:
 ohlcv = dm.get_ohlcv(anchor)
 
 # HMM Regime Detection
-hmm_features = prepare_hmm_features(ohlcv)
+hmm_features, feat_means, feat_stds = prepare_hmm_features(ohlcv)
 hmm_ok = False
 
 try:
     hmm_model = fit_hmm(hmm_features)
     states, probs = predict_regimes(hmm_model, hmm_features)
-    label_map = map_regime_labels(hmm_model)
+    label_map = map_regime_labels(hmm_model, feat_means, feat_stds)
 
     feature_index = ohlcv.index[-len(states):]
     regime_series = None
