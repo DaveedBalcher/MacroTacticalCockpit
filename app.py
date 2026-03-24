@@ -32,7 +32,7 @@ st.set_page_config(
 st.markdown("""
 <style>
     /* Tighten top padding */
-    .block-container { padding-top: 1.5rem; }
+    .block-container { padding-top: 2.5rem; }
 
     /* Style metric cards */
     [data-testid="stMetric"] {
@@ -168,9 +168,10 @@ with header_col3:
         }
         bg, fg = badge_colors.get(dominant_label, ("#374151", "#e5e7eb"))
         st.markdown(
-            f'<div style="text-align:right; margin-top:1.2rem;">'
+            f'<div style="text-align:right; padding-top:0.5rem;">'
             f'<span style="background:{fg}; color:{bg}; padding:6px 16px; '
-            f'border-radius:20px; font-weight:700; font-size:0.95rem;">'
+            f'border-radius:20px; font-weight:700; font-size:0.95rem; '
+            f'display:inline-block;">'
             f'{dominant_label} &middot; {dominant_prob:.0%}</span></div>',
             unsafe_allow_html=True,
         )
