@@ -101,8 +101,12 @@ with st.sidebar:
         rankings = lead_lag_rankings(close_matrix, anchor=anchor)
         display_table = build_lead_lag_table(rankings)
 
+        sidebar_table = display_table[["asset", "lag", "correlation", "direction"]].copy()
+        sidebar_table["direction"] = sidebar_table["direction"].str.replace(
+            "Contemporaneous", "Contemp."
+        )
         st.dataframe(
-            display_table,
+            sidebar_table,
             hide_index=True,
             use_container_width=True,
             column_config={
@@ -111,8 +115,9 @@ with st.sidebar:
                 "correlation": st.column_config.NumberColumn(
                     "Corr",
                     format="%.4f",
+                    width="small",
                 ),
-                "direction": st.column_config.TextColumn("Direction", width="medium"),
+                "direction": st.column_config.TextColumn("Dir.", width="small"),
             },
         )
     else:
@@ -142,39 +147,49 @@ except Exception as e:
     label_map = {}
     regime_series = None
 
-# --- Header row: title + price + regime badge ---
-header_col1, header_col2, header_col3 = st.columns([3, 1, 1])
-with header_col1:
-    st.markdown(f"## Macro Tactical Cockpit — {anchor}")
+# --- Header row: title + price + regime badge (single HTML block for alignment) ---
+latest_price = ohlcv["Close"].iloc[-1]
+prev_price = ohlcv["Close"].iloc[-2] if len(ohlcv) > 1 else latest_price
+price_change = latest_price - prev_price
+delta_color = "#4ade80" if price_change >= 0 else "#f87171"
+delta_arrow = "&#9650;" if price_change >= 0 else "&#9660;"
 
-with header_col2:
-    latest_price = ohlcv["Close"].iloc[-1]
-    prev_price = ohlcv["Close"].iloc[-2] if len(ohlcv) > 1 else latest_price
-    price_change = latest_price - prev_price
-    st.metric("Last Price", f"{latest_price:,.2f}", f"{price_change:+,.2f}")
+badge_html = ""
+if hmm_ok:
+    latest_probs = probs[-1]
+    dominant_idx = int(np.argmax(latest_probs))
+    dominant_label = label_map.get(dominant_idx, f"State {dominant_idx}")
+    dominant_prob = latest_probs[dominant_idx]
 
-with header_col3:
-    if hmm_ok:
-        latest_probs = probs[-1]
-        dominant_idx = int(np.argmax(latest_probs))
-        dominant_label = label_map.get(dominant_idx, f"State {dominant_idx}")
-        dominant_prob = latest_probs[dominant_idx]
+    badge_colors = {
+        "BULL": ("#065f46", "#d1fae5"),
+        "BEAR": ("#7f1d1d", "#fecaca"),
+        "HIGH_VOL": ("#78350f", "#fed7aa"),
+        "NEUTRAL": ("#374151", "#e5e7eb"),
+    }
+    bg, fg = badge_colors.get(dominant_label, ("#374151", "#e5e7eb"))
+    badge_html = (
+        f'<span style="background:{fg}; color:{bg}; padding:5px 14px; '
+        f'border-radius:20px; font-weight:700; font-size:0.85rem; '
+        f'white-space:nowrap;">'
+        f'{dominant_label} &middot; {dominant_prob:.0%}</span>'
+    )
 
-        badge_colors = {
-            "BULL": ("#065f46", "#d1fae5"),
-            "BEAR": ("#7f1d1d", "#fecaca"),
-            "HIGH_VOL": ("#78350f", "#fed7aa"),
-            "NEUTRAL": ("#374151", "#e5e7eb"),
-        }
-        bg, fg = badge_colors.get(dominant_label, ("#374151", "#e5e7eb"))
-        st.markdown(
-            f'<div style="text-align:right; padding-top:0.5rem;">'
-            f'<span style="background:{fg}; color:{bg}; padding:6px 16px; '
-            f'border-radius:20px; font-weight:700; font-size:0.95rem; '
-            f'display:inline-block;">'
-            f'{dominant_label} &middot; {dominant_prob:.0%}</span></div>',
-            unsafe_allow_html=True,
-        )
+st.markdown(
+    f'''<div style="display:flex; align-items:center; justify-content:space-between;
+         flex-wrap:wrap; gap:0.5rem; margin-bottom:0.5rem;">
+        <h2 style="margin:0; flex:1 1 auto;">Macro Tactical Cockpit — {anchor}</h2>
+        <div style="display:flex; align-items:center; gap:1rem; flex-shrink:0;">
+            <div style="text-align:right; line-height:1.3;">
+                <span style="font-size:0.75rem; opacity:0.7;">Last Price</span><br/>
+                <span style="font-size:1.4rem; font-weight:700;">{latest_price:,.2f}</span>
+                <span style="font-size:0.8rem; color:{delta_color};"> {delta_arrow} {price_change:+,.2f}</span>
+            </div>
+            {badge_html}
+        </div>
+    </div>''',
+    unsafe_allow_html=True,
+)
 
 # BSTS Forecast
 close_prices = ohlcv["Close"]
