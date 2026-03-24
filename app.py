@@ -4,7 +4,6 @@ import logging
 
 import numpy as np
 import pandas as pd
-import plotly.graph_objects as go
 import streamlit as st
 
 from src.config import ASSET_DISPLAY_NAMES, ASSET_UNIVERSE
@@ -18,7 +17,13 @@ from src.models import (
     prepare_hmm_features,
 )
 from src.quant import ewma_correlation, lead_lag_rankings
-from src.visuals import build_lead_lag_table, build_main_chart
+from src.visuals import (
+    build_ewma_chart,
+    build_freshness_banner,
+    build_lead_lag_table,
+    build_main_chart,
+    build_regime_badge_html,
+)
 
 logging.basicConfig(level=logging.WARNING)
 
@@ -99,14 +104,10 @@ with st.sidebar:
     st.markdown('<p class="section-header">Lead-Lag Rankings</p>', unsafe_allow_html=True)
     if len(close_matrix.columns) > 1:
         rankings = lead_lag_rankings(close_matrix, anchor=anchor)
-        display_table = build_lead_lag_table(rankings)
+        display_table = build_lead_lag_table(rankings, compact=True)
 
-        sidebar_table = display_table[["asset", "lag", "correlation", "direction"]].copy()
-        sidebar_table["direction"] = sidebar_table["direction"].str.replace(
-            "Contemporaneous", "Contemp."
-        )
         st.dataframe(
-            sidebar_table,
+            display_table,
             hide_index=True,
             use_container_width=True,
             column_config={
@@ -115,9 +116,8 @@ with st.sidebar:
                 "correlation": st.column_config.NumberColumn(
                     "Corr",
                     format="%.4f",
-                    width="small",
                 ),
-                "direction": st.column_config.TextColumn("Dir.", width="small"),
+                "direction": st.column_config.TextColumn("Direction"),
             },
         )
     else:
@@ -126,6 +126,10 @@ with st.sidebar:
 
 # --- Main Area ---
 ohlcv = dm.get_ohlcv(anchor)
+
+# Convert to Eastern Time for display
+ohlcv = ohlcv.copy()
+ohlcv.index = ohlcv.index.tz_convert("US/Eastern")
 
 # HMM Regime Detection
 hmm_features, feat_means, feat_stds = prepare_hmm_features(ohlcv)
@@ -136,6 +140,7 @@ try:
     states, probs = predict_regimes(hmm_model, hmm_features)
     label_map = map_regime_labels(hmm_model, feat_means, feat_stds)
 
+    # ohlcv is already in Eastern Time at this point
     feature_index = ohlcv.index[-len(states):]
     regime_series = None
     if len(feature_index) == len(states):
@@ -161,29 +166,19 @@ if hmm_ok:
     dominant_label = label_map.get(dominant_idx, f"State {dominant_idx}")
     dominant_prob = latest_probs[dominant_idx]
 
-    badge_colors = {
-        "BULL": ("#065f46", "#d1fae5"),
-        "BEAR": ("#7f1d1d", "#fecaca"),
-        "HIGH_VOL": ("#78350f", "#fed7aa"),
-        "NEUTRAL": ("#374151", "#e5e7eb"),
-    }
-    bg, fg = badge_colors.get(dominant_label, ("#374151", "#e5e7eb"))
-    badge_html = (
-        f'<span style="background:{fg}; color:{bg}; padding:5px 14px; '
-        f'border-radius:20px; font-weight:700; font-size:0.85rem; '
-        f'white-space:nowrap;">'
-        f'{dominant_label} &middot; {dominant_prob:.0%}</span>'
-    )
+    badge_html = build_regime_badge_html(dominant_label, dominant_prob)
 
 st.markdown(
-    f'''<div style="display:flex; align-items:center; justify-content:space-between;
+    f'''<div style="display:flex; align-items:flex-start; justify-content:space-between;
          flex-wrap:wrap; gap:0.5rem; margin-bottom:0.5rem;">
-        <h2 style="margin:0; flex:1 1 auto;">Macro Tactical Cockpit — {anchor}</h2>
-        <div style="display:flex; align-items:center; gap:1rem; flex-shrink:0;">
-            <div style="text-align:right; line-height:1.3;">
-                <span style="font-size:0.75rem; opacity:0.7;">Last Price</span><br/>
-                <span style="font-size:1.4rem; font-weight:700;">{latest_price:,.2f}</span>
-                <span style="font-size:0.8rem; color:{delta_color};"> {delta_arrow} {price_change:+,.2f}</span>
+        <h2 style="margin:0; flex:1 1 auto; padding-top:0.3rem;">Macro Tactical Cockpit — {anchor}</h2>
+        <div style="background:rgba(128,128,128,0.06); border:1px solid rgba(128,128,128,0.12);
+             border-radius:12px; padding:14px 22px; text-align:center; min-width:160px;">
+            <div style="font-size:1.6rem; font-weight:800; letter-spacing:-0.02em; line-height:1.1;">
+                {latest_price:,.2f}
+            </div>
+            <div style="font-size:0.85rem; color:{delta_color}; font-weight:600; margin:4px 0 10px;">
+                {delta_arrow} {price_change:+,.2f}
             </div>
             {badge_html}
         </div>
@@ -191,11 +186,20 @@ st.markdown(
     unsafe_allow_html=True,
 )
 
+# --- Freshness banner ---
+last_ts = ohlcv.index[-1]
+st.markdown(build_freshness_banner(last_ts), unsafe_allow_html=True)
+
 # BSTS Forecast
 close_prices = ohlcv["Close"]
 try:
     bsts_result = fit_bsts(close_prices)
     fan_data = forecast_bsts(bsts_result)
+    # Convert forecast index to Eastern Time to match OHLCV
+    if fan_data.index.tz is not None:
+        fan_data.index = fan_data.index.tz_convert("US/Eastern")
+    else:
+        fan_data.index = fan_data.index.tz_localize("UTC").tz_convert("US/Eastern")
 except Exception:
     fan_data = None
 
@@ -233,33 +237,12 @@ with col2:
             ewma_corr = ewma_correlation(close_matrix, anchor=anchor)
             latest_corr = ewma_corr.dropna().iloc[-1].sort_values(ascending=False)
 
-            # Build a horizontal Plotly bar chart for better control
-            colors = ["#4ade80" if v > 0 else "#f87171" for v in latest_corr.values]
-            fig_corr = go.Figure(go.Bar(
-                x=latest_corr.values,
-                y=latest_corr.index,
-                orientation="h",
-                marker_color=colors,
-                text=[f"{v:+.3f}" for v in latest_corr.values],
-                textposition="auto",
-                textfont=dict(size=12),
-            ))
-            fig_corr.update_layout(
-                height=max(300, len(latest_corr) * 42),
-                margin=dict(l=10, r=10, t=10, b=30),
-                xaxis=dict(range=[-1.15, 1.15], title="Correlation", zeroline=True,
-                           zerolinecolor="rgba(128,128,128,0.3)", zerolinewidth=1),
-                yaxis=dict(autorange="reversed"),
-                template="plotly_dark",
-                font=dict(size=13),
-                bargap=0.3,
-            )
+            fig_corr = build_ewma_chart(latest_corr)
             st.plotly_chart(fig_corr, use_container_width=True)
         except Exception as e:
             st.warning(f"EWMA correlation failed: {e}")
     else:
         st.info("Need at least 2 assets.")
 
-# --- Footer: last update timestamp ---
-last_ts = ohlcv.index[-1]
-st.caption(f"Last data point: {last_ts.strftime('%Y-%m-%d %H:%M UTC')}")
+# --- Footer ---
+st.caption(f"Last data point: {last_ts.strftime('%Y-%m-%d %H:%M %Z')}")

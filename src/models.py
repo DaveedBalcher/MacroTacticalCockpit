@@ -229,19 +229,32 @@ def forecast_bsts(
     # Ensure forecast has a proper DatetimeIndex (statsmodels may return
     # a numeric RangeIndex when it can't infer frequency from 1-min data).
     if not isinstance(result.index, pd.DatetimeIndex):
-        training_index = fitted_model.model.data.dates
-        if training_index is not None and len(training_index) > 1:
-            last_ts = training_index[-1]
-            freq = training_index[-1] - training_index[-2]
+        # Use the original training data index to derive the forecast timestamps
+        endog = fitted_model.model.endog
+        orig_index = getattr(fitted_model.model.data, "dates", None)
+        # dates may be None for irregular freq; fall back to the Series index
+        if orig_index is None or len(orig_index) < 2:
+            orig_index = fitted_model.model.data.orig_endog
+            if isinstance(orig_index, pd.Series):
+                orig_index = orig_index.index
+
+        if isinstance(orig_index, pd.DatetimeIndex) and len(orig_index) >= 2:
+            last_ts = orig_index[-1]
+            freq = orig_index[-1] - orig_index[-2]
             result.index = pd.date_range(
                 start=last_ts + freq,
                 periods=horizon,
                 freq=freq,
             )
         else:
-            # Fallback: 1-minute intervals from now
+            # Fallback: 1-minute intervals from the last training observation
+            last_ts = getattr(fitted_model.model.data, "dates", None)
+            if last_ts is not None and len(last_ts) > 0:
+                start = last_ts[-1] + pd.Timedelta(minutes=1)
+            else:
+                start = pd.Timestamp.now(tz="UTC")
             result.index = pd.date_range(
-                start=pd.Timestamp.now(tz="UTC"),
+                start=start,
                 periods=horizon,
                 freq="min",
             )

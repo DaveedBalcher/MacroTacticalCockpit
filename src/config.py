@@ -53,8 +53,20 @@ BSTS_CI_LEVELS: list[float] = [0.50, 0.90]
 # === REGIME LABELS (canonical reference, dynamically mapped) ===
 REGIME_LABELS: list[str] = ["BULL", "NEUTRAL", "BEAR", "HIGH_VOL"]
 REGIME_COLORS: dict[str, str] = {
-    "BULL": "rgba(0, 200, 0, 0.08)",
-    "NEUTRAL": "rgba(128, 128, 128, 0.08)",
-    "BEAR": "rgba(200, 0, 0, 0.08)",
-    "HIGH_VOL": "rgba(255, 165, 0, 0.08)",
+    "BULL": "rgba(0, 200, 0, 0.12)",
+    "NEUTRAL": "rgba(128, 128, 128, 0.12)",
+    "BEAR": "rgba(200, 0, 0, 0.12)",
+    "HIGH_VOL": "rgba(255, 165, 0, 0.12)",
 }
+
+# === VISUAL PARAMETERS ===
+PLOTLY_TEMPLATE: str = "plotly_white"
+
+REGIME_BADGE_COLORS: dict[str, tuple[str, str]] = {
+    "BULL": ("#065f46", "#d1fae5"),
+    "BEAR": ("#7f1d1d", "#fecaca"),
+    "HIGH_VOL": ("#78350f", "#fed7aa"),
+    "NEUTRAL": ("#374151", "#e5e7eb"),
+}
+
+FRESHNESS_STALE_MINUTES: int = 30
