@@ -2,6 +2,7 @@
 
 import logging
 import os
+import time
 
 import numpy as np
 import pandas as pd
@@ -49,7 +50,20 @@ def fetch_ohlcv(
 
     yf_ticker = TICKER_MAP[ticker_alias]
     ticker = yf.Ticker(yf_ticker)
-    df = ticker.history(period=period, interval=interval)
+
+    # Retry with backoff on rate-limit errors (common on Streamlit Cloud cold start)
+    df = pd.DataFrame()
+    for attempt in range(3):
+        try:
+            df = ticker.history(period=period, interval=interval)
+            break
+        except yf.exceptions.YFRateLimitError:
+            if attempt < 2:
+                wait = 2 ** attempt  # 1s, 2s
+                logger.warning("Rate-limited fetching %s, retrying in %ds...", ticker_alias, wait)
+                time.sleep(wait)
+            else:
+                raise
 
     if df.empty:
         raise RuntimeError(
@@ -86,7 +100,7 @@ def fetch_universe(
     for alias in assets:
         try:
             frames[alias] = fetch_ohlcv(alias, period=period, interval=interval)
-        except (ValueError, RuntimeError) as e:
+        except (ValueError, RuntimeError, yf.exceptions.YFRateLimitError) as e:
             logger.warning("Skipping %s: %s", alias, e)
 
     return frames
